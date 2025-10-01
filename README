@@ -1,0 +1,146 @@
+	Descrierea functionalitatii serverului
+
+Functia principala care coordoneaza intreaga activitate a
+serverului este run_server(). Folosim poll() pentru multiplexarea
+operatiilor pe mai multi fd. Adaugam socketurile TCP, UDP si stdin,
+si intram in loopul principal pentru gestionarea evenimentelor I/O.
+Cand serverul primeste o conexiune noua TCP, apelam functia
+handle_new_connection(). Aceasta accepta conexiunea, apeland mai
+apoi functia authentification() pentru verificarea id ului clientului
+in eventualitatea in care acesta e deja utilizat, caz in care conexiunea
+e respinsa. Daca nu exista, se adauga clientul in hashmap.
+Cand serverul primeste un mesaj UDP, acesta foloseste funcția handle_udp_message()
+care extrage datele din pachetul UDP primit si le structureaza într-un nou obiect
+de tip message alocat dinamic. Apelam maiapoi process_udp_message(), care la
+randul ei apeleaza format_message_for_tcp pentru a formata mesajul in format tcp,
+si se parcurge hashmapul, trimitandu-se respectivul mesaj tuturor
+clientilor abonati la respectivul topic.
+Mesajele udp sunt convertite cu ajutorul functiei functiei
+format_message_for_tcp(), apelandu-se functiile specializate
+INT_FORMAT(), SHORT_REAL_FORMAT(), etc.
+Mesajele de la clientii TCP de tipul subscribe sau unsubscribe
+sunt procesate de functia process_tcp_message() care parseaza
+comanda si apeleaza functia corespunzatoare (handle_subscribe() sau
+handle_unsubscribe()).
+Functia handle_subscribe() adauga clientul in hashmapul topicurilor
+abonatilor, iar handle_unsubscribe() il sterge din hashmap.
+
+Pentru o performanta ridicata a aplicatiei, am dezactivat
+algoritmul Nagle pentru conexiunile TCP folosind TCP_NODELAY.
+De asemenea, am implementat send_all() pentru a ne asigura ca toate
+datele sunt trimise, gestionand si cazul cand functia send()
+nu trimite toti octetii dintr-o data.
+
+
+    Descrierea functionalitatii clientului
+
+Functia care sta la baza functionarii clientului este run_client().
+Aceasta se ocupa cu initializarea clientului, conectarea la server.
+Cand clientul primeste o comanda de la utilizator, aceasta este
+procesata de functia process_stdin_command(), care identifica
+comanda: daca este "exit", clientul se inchide, daca este "subscribe",
+sau "unsubscribe", trimite comanda corespunzatoare serverului.
+Cand clientul primeste un mesaj de la server, acesta este
+procesat de functia process_server_message(), care afiseaza
+mesajele primite, gestionand totodata bufferul pentru mesaje
+partiale.
+Clientul foloseste 2 structuri de buffer principale pentru gestionarea
+comunicarii:
+-ReceiveBuffer-stocheaza datele primite de la server.Este
+dimensionat ca fiind de două ori mai mare decât bufferul
+standard (BUFLEN * 2) pentru a asigura spațiu suficient
+pentru mesaje concatenate. Câmpul current_size ține
+evidența cantității de date valide din buffer, permițând
+procesarea corectă a mesajelor parțiale sau concatenate.
+Funcția process_server_message() utilizează acest buffer pentru
+a reconstrui mesajele complete.
+-CommandBuffer -Acest buffer simplu stochează comenzile introduse de utilizator
+(subscribe, unsubscribe, exit).
+
+Functia connect_to_server() se ocupa cu crearea socket-ului
+TCP, configurandu-l cu optiunea TCP_NODELAY,  și stabilește
+conexiunea cu serverul la adresa IP și portul specificate.
+Returnează descriptorul de fișier al socket-ului în caz de
+succes sau -1 în caz de eroare.
+
+Functia authenticate_client() trimite ID-ul clientului la server,
+asteapta raspunsul acestuia, iar daca raspunsul e "Connected",
+returneaza true, altfel false.
+
+    Structura trie
+
+Pentru o buna gestiune a abonamentelor clientilor la topicuri, am
+implementat structura de tip trie. Functionalitatea
+acesteia este descrisa in cele ce urmeaza:
+-functia topic_matches_pattern()parcurge atat topicul cat si
+patternul, recursiv, tratand cazurile cand intalneste wildcarduri.
+-functia client_manage_subscription() care aboneaza sau
+dezaboneaza clientul de la topicul corespunzator, actualizand
+trie-ul corespunzator.
+-functia insert_pattern() adauga un pattern in trie-ul, tratand
+atat cazrile cand patternul contine wildcarduri, cat si cazul cand
+patternul este un topic normal.
+Cand un client se aboneaza la un topic, pattern-ul acestuia este
+inserat in trie-ul personal. Cand un mesaj soseste pe un anumit
+topic, serverul verifica pentru fiecare client daca topicul se
+potriveste cu vreunul din pattern-urile sale de abonare,
+folosind functia client_subscribed().
+
+    Structura hashmap
+
+Pentru gestionarea clientilor conectati, am implementat un
+hashmap care permite stocarea clientilor conectati, folosind id-ul
+clientului ca si cheie. Principalele functii sunt:
+create_clients_hashmap() - initializeaza structura hashmap
+add_client_to_hashmap() - adauga un client în hashmap
+find_client_by_id() - gaseste un client după ID
+find_client_by_fd() - gaseste un client dupa descriptorul de fisier
+mark_client_disconnected() - marcheaza un client ca deconectat
+resize_hashmap() - redimensioneaza hashmap-ul când factorul de incarcare
+depaaeste pragul
+
+   Descrierea structurilor folosite
+
+-TrieNode:
+	Reprezinta un nod in structura trie utilizata pentru stocarea
+	si verificarea pattern-urilor de abonare:
+	children: Un array de 128 de pointeri la noduri copil
+	(pentru fiecare caracter ASCII)
+	plus: Pointer la nodul copil pentru wildcards de tip '+'
+	star: Pointer la nodul copil pentru wildcards de tip '*'
+	is_end: Flag care indica daca nodul reprezinta sfarsitul unui
+	pattern
+	subscriber_count: Numarul de abonati la acest pattern
+	pattern: Stringul pattern-ului complet
+	depth: Adancimea nodului in trie
+
+-message:
+	type: Tipul mesajului (UDP sau TCP)
+	sender_ip: Adresa IP a expeditorului
+	sender_port: Portul expeditorului
+	topic: Topicul mesajului
+	data_type: Tipul de date al continutului
+	data_type_str: Reprezentarea textuala a tipului de date
+	cont_brut: Continutul brut al mesajului
+	cont_formatat: Payload-ul formatat pentru transmitere
+	catre clientii TCP
+	content_len: Lungimea continutului
+
+-Client:
+ Structura care reprezinta un client TCP conectat la server:
+	fd: Descriptorul de fisier al socket-ului clientului
+	id: ID-ul unic al clientului
+	connected: Flag care indica daca clientul este conectat
+	subscription_trie: Trie-ul care stocheaza pattern-urile
+	de abonare ale clientului
+	is_occupied: flag care indica daca pozitia din hashmap
+	este ocupata
+
+-ClientsHashMap:
+	Structura care implementeaza un hashmap pentru stocarea si
+	accesarea rapida a clientilor:
+
+	clients: Array de clienti
+	size: Dimensiunea hashmap-ului
+	count: Numarul de clienti stocati in hashmap
+	prag_redim : prag de redimensionare al hashmap-ului
